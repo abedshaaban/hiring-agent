@@ -18,6 +18,7 @@ DEFAULT_PROVIDER = ModelProvider.OLLAMA
 
 # Get model and provider from environment or use defaults
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", DEFAULT_MODEL_NAME)
+LLM_PROVIDER_CONFIGURED = "LLM_PROVIDER" in os.environ
 PROVIDER = os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER.value)
 
 # Validate provider
@@ -65,3 +66,8 @@ MODEL_PROVIDER_MAPPING = {
 
 # Get API keys from environment
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# vMLX local OpenAI-compatible API settings
+VMLX_BASE_URL = os.getenv("VMLX_BASE_URL", "http://127.0.0.1:8000/v1")
+VMLX_API_KEY = os.getenv("VMLX_API_KEY", "")
+VMLX_TIMEOUT = int(os.getenv("VMLX_TIMEOUT", "300"))

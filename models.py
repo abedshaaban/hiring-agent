@@ -8,6 +8,7 @@ class ModelProvider(Enum):
 
     OLLAMA = "ollama"
     GEMINI = "gemini"
+    VMLX = "vmlx"
 
 
 @runtime_checkable
@@ -308,6 +309,100 @@ class OllamaProvider:
             chat_params["format"] = kwargs["format"]
 
         return self.client.chat(**chat_params)
+
+
+class VMLXProvider:
+    """vMLX provider using its OpenAI-compatible local API."""
+
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:8000/v1",
+        api_key: str = "",
+        timeout: int = 300,
+    ):
+        import requests
+
+        self.client = requests
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def chat(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        options: Dict[str, Any] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Send a chat request to vMLX and return the internal unified format."""
+
+        request_options = options.copy() if options else {}
+        stream = kwargs.get("stream", request_options.pop("stream", False))
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+        }
+
+        if "temperature" in request_options:
+            payload["temperature"] = request_options["temperature"]
+        if "top_p" in request_options:
+            payload["top_p"] = request_options["top_p"]
+
+        if "format" in kwargs:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "hiring_agent_response",
+                    "schema": kwargs["format"],
+                    "strict": True,
+                },
+            }
+
+        data = self._post_chat_completion(payload)
+        content = data["choices"][0]["message"].get("content") or ""
+
+        return {
+            "message": {
+                "role": "assistant",
+                "content": content,
+            },
+            "raw": data,
+        }
+
+    def _post_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        url = f"{self.base_url}/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        response = self.client.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+
+        if response.status_code in (400, 422) and "response_format" in payload:
+            fallback_payload = payload.copy()
+            fallback_payload["response_format"] = {"type": "json_object"}
+            response = self.client.post(
+                url,
+                headers=headers,
+                json=fallback_payload,
+                timeout=self.timeout,
+            )
+
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            raise RuntimeError(
+                f"vMLX request failed with status {response.status_code}: "
+                f"{response.text}"
+            ) from exc
+
+        return response.json()
 
 
 class GeminiProvider:

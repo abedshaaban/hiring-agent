@@ -3,9 +3,17 @@ Utility functions for LLM providers.
 """
 
 import logging
-from typing import Any, Dict, Optional
-from models import ModelProvider, OllamaProvider, GeminiProvider
-from prompt import MODEL_PROVIDER_MAPPING, GEMINI_API_KEY
+from typing import Any
+from models import ModelProvider, OllamaProvider, GeminiProvider, VMLXProvider
+from prompt import (
+    MODEL_PROVIDER_MAPPING,
+    GEMINI_API_KEY,
+    LLM_PROVIDER_CONFIGURED,
+    PROVIDER,
+    VMLX_API_KEY,
+    VMLX_BASE_URL,
+    VMLX_TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +53,28 @@ def initialize_llm_provider(model_name: str) -> Any:
         model_name: The name of the model to use
 
     Returns:
-        An initialized LLM provider (either OllamaProvider or GeminiProvider)
+        An initialized LLM provider.
     """
-    # Default to Ollama provider
-    provider = OllamaProvider()
-    # If using Gemini and API key is available, use Gemini provider
-    model_provider = MODEL_PROVIDER_MAPPING.get(model_name, ModelProvider.OLLAMA)
+    if LLM_PROVIDER_CONFIGURED:
+        model_provider = ModelProvider(PROVIDER)
+    else:
+        model_provider = MODEL_PROVIDER_MAPPING.get(model_name, ModelProvider.OLLAMA)
+
     if model_provider == ModelProvider.GEMINI:
         if not GEMINI_API_KEY:
             logger.warning("⚠️ Gemini API key not found. Falling back to Ollama.")
+            return OllamaProvider()
         else:
             logger.info(f"🔄 Using Google Gemini API provider with model {model_name}")
-            provider = GeminiProvider(api_key=GEMINI_API_KEY)
-    else:
-        logger.info(f"🔄 Using Ollama provider with model {model_name}")
-    return provider
+            return GeminiProvider(api_key=GEMINI_API_KEY)
+
+    if model_provider == ModelProvider.VMLX:
+        logger.info(f"🔄 Using vMLX provider with model {model_name}")
+        return VMLXProvider(
+            base_url=VMLX_BASE_URL,
+            api_key=VMLX_API_KEY,
+            timeout=VMLX_TIMEOUT,
+        )
+
+    logger.info(f"🔄 Using Ollama provider with model {model_name}")
+    return OllamaProvider()

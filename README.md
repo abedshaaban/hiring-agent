@@ -36,7 +36,7 @@
 
 ## Overview
 
-Hiring Agent parses a resume PDF to Markdown, extracts sectioned JSON using a local or hosted LLM, augments the data with GitHub profile and repository signals, then produces an objective evaluation with category scores, evidence, bonus points, and deductions. You can run fully local with Ollama or use Google Gemini.
+Hiring Agent parses a resume PDF to Markdown, extracts sectioned JSON using a local or hosted LLM, augments the data with GitHub profile and repository signals, then produces an objective evaluation with category scores, evidence, bonus points, and deductions. You can run fully local with Ollama or vMLX, or use Google Gemini.
 
 ---
 
@@ -85,10 +85,12 @@ Hiring Agent parses a resume PDF to Markdown, extracts sectioned JSON using a lo
 
   The repository pins `.python-version` to 3.11.13.
 
-- **One LLM backend** (either of them)
+- **One LLM backend** (one of these)
 
   - **Ollama** for local models
     Install from the [official site](https://ollama.com/), then run `ollama serve`.
+  - **vMLX** for local MLX models
+    Start the vMLX local server and use its OpenAI-compatible API endpoint.
   - **Google Gemini** if you have an API key, get it from [here](https://aistudio.google.com/api-keys).
 
 ### Quick setup with pip
@@ -138,10 +140,13 @@ $ cp .env.example .env
 
 | Variable         | Values                                      | Description                                                            |
 | ---------------- | ------------------------------------------- | ---------------------------------------------------------------------- |
-| `LLM_PROVIDER`   | `ollama` or `gemini`                        | Chooses provider. Defaults to Ollama.                                  |
-| `DEFAULT_MODEL`  | for example `gemma3:4b` or `gemini-2.5-pro` | Model name passed to the provider.                                     |
-| `GEMINI_API_KEY` | string                                      | Required when `LLM_PROVIDER=gemini`.                                   |
-| `GITHUB_TOKEN`   | optional                                    | Inherits from your shell environment, improves GitHub API rate limits. |
+| `LLM_PROVIDER`    | `ollama`, `gemini`, or `vmlx`                 | Chooses provider. Defaults to Ollama.                                  |
+| `DEFAULT_MODEL`   | for example `gemma3:4b`, `gemini-2.5-pro`, or a vMLX model name | Model name passed to the provider.                       |
+| `GEMINI_API_KEY`  | string                                        | Required when `LLM_PROVIDER=gemini`.                                   |
+| `VMLX_BASE_URL` | URL                                            | vMLX OpenAI-compatible base URL. Defaults to `http://127.0.0.1:8000/v1`. |
+| `VMLX_API_KEY` | string                                          | Optional bearer token for vMLX if your local server requires one.      |
+| `VMLX_TIMEOUT` | integer seconds                                | Request timeout for vMLX. Defaults to `300`.                           |
+| `GITHUB_TOKEN`    | optional                                      | Inherits from your shell environment, improves GitHub API rate limits. |
 
 Provider mapping lives in `prompt.py` and `models.py`. The `config.py` file has a single flag:
 
@@ -258,6 +263,22 @@ What happens:
 - Set `LLM_PROVIDER=ollama`
 - Set `DEFAULT_MODEL` to any pulled model, for example `gemma3:4b`
 - The provider wrapper in `models.OllamaProvider` calls `ollama.chat`
+
+### vMLX
+
+- Start your vMLX local server
+- Set `LLM_PROVIDER=vmlx`
+- Set `DEFAULT_MODEL` to the model name exposed by vMLX
+- Set `VMLX_BASE_URL` if your server is not at `http://127.0.0.1:8000/v1`
+- The wrapper in `models.VMLXProvider` calls the OpenAI-compatible `/chat/completions` endpoint and adapts responses to the same internal format used by the rest of the app
+
+Example:
+
+```bash
+LLM_PROVIDER=vmlx
+DEFAULT_MODEL=your-local-vmlx-model
+VMLX_BASE_URL=http://127.0.0.1:8000/v1
+```
 
 ### Gemini
 
