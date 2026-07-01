@@ -311,6 +311,40 @@ DEFAULT_MODEL=your-local-vmlx-model
 VMLX_BASE_URL=http://127.0.0.1:8000/v1
 ```
 
+#### Start and test a vMLX model
+
+Start the vMLX server with your local MLX model path:
+
+```bash
+$ vmlx serve /Users/.../.cache/huggingface/hub/Qwen/Qwen3-4B-MLX-4bit
+```
+
+In a second terminal, verify that the OpenAI-compatible API endpoint is running:
+
+```bash
+$ curl http://127.0.0.1:8000/v1/models
+```
+
+Activate the project environment:
+
+```bash
+$ source .venv/bin/activate
+```
+
+Make sure the vMLX environment variables are set:
+
+```bash
+$ export LLM_PROVIDER=vmlx
+$ export DEFAULT_MODEL=your-vmlx-model-name
+$ export VMLX_BASE_URL=http://127.0.0.1:8000/v1
+```
+
+Run a scoring test:
+
+```bash
+$ python score.py --input /... --output-dir results
+```
+
 ### Gemini
 
 - Set `LLM_PROVIDER=gemini`
