@@ -5,6 +5,7 @@ import logging
 import csv
 import argparse
 import re
+import time
 from pdf import PDFHandler
 from github import fetch_and_display_github_info
 from models import JSONResume, EvaluationData
@@ -568,6 +569,7 @@ def run_batch(input_path: str, output_dir: str, print_results: bool = True) -> i
     failures = []
 
     for index, pdf_path in enumerate(pdf_paths, 1):
+        candidate_start = time.monotonic()
         print(f"\n[{index}/{len(pdf_paths)}] Scoring {pdf_path}")
         try:
             result = main(pdf_path, output_dir=output_dir, print_results=print_results)
@@ -585,6 +587,9 @@ def run_batch(input_path: str, output_dir: str, print_results: bool = True) -> i
             failures.append(
                 {"source_file": os.path.abspath(pdf_path), "error": str(exc)}
             )
+        finally:
+            candidate_elapsed = time.monotonic() - candidate_start
+            print(f"[{index}/{len(pdf_paths)}] Finished in {candidate_elapsed:.1f}s")
 
     ranked_results = rank_results(results)
     for result in ranked_results:

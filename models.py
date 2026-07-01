@@ -1,3 +1,6 @@
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import List, Optional, Dict, Tuple, Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
@@ -326,6 +329,7 @@ class VMLXProvider:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.heartbeat_interval = int(os.getenv("VMLX_HEARTBEAT_INTERVAL", "30"))
 
     def chat(
         self,
@@ -336,8 +340,11 @@ class VMLXProvider:
     ) -> Dict[str, Any]:
         """Send a chat request to vMLX and return the internal unified format."""
 
+        start_time = time.monotonic()
         request_options = options.copy() if options else {}
         stream = kwargs.get("stream", request_options.pop("stream", False))
+        prompt_chars = self._count_message_chars(messages)
+        approx_prompt_tokens = max(1, prompt_chars // 4) if prompt_chars else 0
 
         payload = {
             "model": model,
@@ -360,8 +367,26 @@ class VMLXProvider:
                 },
             }
 
+        print(
+            "vMLX request: "
+            f"model={model}, messages={len(messages)}, "
+            f"prompt={prompt_chars:,} chars (~{approx_prompt_tokens:,} tokens)",
+            flush=True,
+        )
         data = self._post_chat_completion(payload)
         content = data["choices"][0]["message"].get("content") or ""
+        elapsed = time.monotonic() - start_time
+        usage = data.get("usage", {})
+        if usage:
+            usage_text = (
+                f", usage={usage.get('prompt_tokens', '?')} prompt / "
+                f"{usage.get('completion_tokens', '?')} completion / "
+                f"{usage.get('total_tokens', '?')} total tokens"
+            )
+        else:
+            usage_text = f", response={len(content):,} chars"
+
+        print(f"vMLX completed in {elapsed:.1f}s{usage_text}", flush=True)
 
         return {
             "message": {
@@ -371,27 +396,53 @@ class VMLXProvider:
             "raw": data,
         }
 
+    @staticmethod
+    def _count_message_chars(messages: List[Dict[str, str]]) -> int:
+        return sum(len(str(message.get("content", ""))) for message in messages)
+
+    def _post_with_heartbeat(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        label: str = "vMLX",
+    ):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                self.client.post,
+                url,
+                headers=headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            start_time = time.monotonic()
+
+            while not future.done():
+                wait_seconds = max(1, self.heartbeat_interval)
+                try:
+                    return future.result(timeout=wait_seconds)
+                except FutureTimeoutError:
+                    elapsed = time.monotonic() - start_time
+                    print(f"Still waiting on {label}... {elapsed:.0f}s", flush=True)
+
+            return future.result()
+
     def _post_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}/chat/completions"
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        response = self.client.post(
-            url,
-            headers=headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+        response = self._post_with_heartbeat(url, headers, payload)
 
         if response.status_code in (400, 422) and "response_format" in payload:
             fallback_payload = payload.copy()
             fallback_payload["response_format"] = {"type": "json_object"}
-            response = self.client.post(
+            response = self._post_with_heartbeat(
                 url,
                 headers=headers,
-                json=fallback_payload,
-                timeout=self.timeout,
+                payload=fallback_payload,
+                label="vMLX fallback",
             )
 
         try:
