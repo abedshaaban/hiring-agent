@@ -220,6 +220,37 @@ What happens:
 2. If a GitHub profile is found in the resume, repositories are fetched and cached to `cache/githubcache_<basename>.json`.
 3. The evaluator prints a report and, in development mode, appends a CSV row to `resume_evaluations.csv`.
 
+### Batch scoring with ranked output
+
+Score every PDF in a directory and write result files to an output directory.
+
+```bash
+$ python score.py --input /Users/abedshaaban/Downloads/cvs --output-dir results
+```
+
+You can also pass a text manifest with one PDF path per line:
+
+```bash
+$ python score.py --input cvs.txt --output-dir results
+```
+
+Supported inputs for `--input`:
+
+- A single `.pdf`
+- A directory containing PDFs
+- A `.txt` file with one PDF path per line
+- A `.csv` file with a `path`, `pdf_path`, `file`, or `file_path` column
+- A `.json` file containing a list of paths, or an object with `files` or `pdfs`
+
+The output directory contains:
+
+- One JSON file per resume, including `rank`, `score`, candidate data, evaluation details, and GitHub data
+- `ranked_results.json`
+- `ranked_results.csv`
+- `ranked_results.md`
+
+Use `--quiet` to skip the detailed console report for each resume.
+
 ---
 
 ## Directory layout

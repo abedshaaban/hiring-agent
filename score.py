@@ -3,10 +3,12 @@ import sys
 import json
 import logging
 import csv
+import argparse
+import re
 from pdf import PDFHandler
 from github import fetch_and_display_github_info
 from models import JSONResume, EvaluationData
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 from evaluator import ResumeEvaluator
 from pathlib import Path
 from prompt import DEFAULT_MODEL, MODEL_PARAMETERS
@@ -24,6 +26,35 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)5s - %(lineno)5d - %(funcName)33s - %(levelname)5s - %(message)s",
 )
+
+
+def calculate_total_score(evaluation: EvaluationData) -> Dict[str, float]:
+    """Calculate final evaluation score using the same rules as console output."""
+    if not evaluation:
+        return {"score": 0.0, "max_score": 0.0, "max_possible_score": 0.0}
+
+    total_score = 0.0
+    max_score = 0.0
+
+    if hasattr(evaluation, "scores") and evaluation.scores:
+        for category_data in evaluation.scores.model_dump().values():
+            total_score += min(category_data["score"], category_data["max"])
+            max_score += category_data["max"]
+
+    if hasattr(evaluation, "bonus_points") and evaluation.bonus_points:
+        total_score += evaluation.bonus_points.total
+
+    if hasattr(evaluation, "deductions") and evaluation.deductions:
+        total_score -= evaluation.deductions.total
+
+    max_possible_score = max_score + 20
+    total_score = min(total_score, max_possible_score)
+
+    return {
+        "score": round(total_score, 2),
+        "max_score": round(max_score, 2),
+        "max_possible_score": round(max_possible_score, 2),
+    }
 
 
 def print_evaluation_results(
@@ -159,6 +190,148 @@ def print_evaluation_results(
     print("\n" + "=" * 80)
 
 
+def build_candidate_result(
+    pdf_path: str,
+    candidate_name: str,
+    evaluation: EvaluationData,
+    resume_data: JSONResume,
+    github_data: dict,
+) -> Dict[str, Any]:
+    score_summary = calculate_total_score(evaluation)
+    csv_row = transform_evaluation_response(
+        file_name=os.path.basename(pdf_path),
+        evaluation=evaluation,
+        resume_data=resume_data,
+        github_data=github_data,
+    )
+
+    return {
+        "rank": None,
+        "candidate_name": candidate_name,
+        "source_file": os.path.abspath(pdf_path),
+        "file_name": os.path.basename(pdf_path),
+        **score_summary,
+        "evaluation": evaluation.model_dump() if evaluation else None,
+        "resume": resume_data.model_dump() if resume_data else None,
+        "github": github_data or {},
+        "summary": csv_row,
+    }
+
+
+def safe_output_stem(path: str) -> str:
+    stem = Path(path).stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-")
+    return stem or "resume"
+
+
+def write_candidate_json(result: Dict[str, Any], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{safe_output_stem(result['file_name'])}.json"
+    output_path.write_text(
+        json.dumps(result, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def write_ranked_outputs(results: List[Dict[str, Any]], output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ranked_json_path = output_dir / "ranked_results.json"
+    ranked_json_path.write_text(
+        json.dumps(results, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    csv_path = output_dir / "ranked_results.csv"
+    fieldnames = [
+        "rank",
+        "candidate_name",
+        "score",
+        "max_score",
+        "max_possible_score",
+        "file_name",
+        "source_file",
+    ]
+    with csv_path.open("w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for result in results:
+            writer.writerow({field: result.get(field) for field in fieldnames})
+
+    markdown_path = output_dir / "ranked_results.md"
+    lines = [
+        "# Ranked Resume Results",
+        "",
+        "| Rank | Candidate | Score | File |",
+        "| ---: | --- | ---: | --- |",
+    ]
+    for result in results:
+        lines.append(
+            "| {rank} | {candidate} | {score}/{max_possible} | {file_name} |".format(
+                rank=result.get("rank", ""),
+                candidate=result.get("candidate_name", ""),
+                score=result.get("score", ""),
+                max_possible=result.get("max_possible_score", ""),
+                file_name=result.get("file_name", ""),
+            )
+        )
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def discover_pdf_paths(input_path: str) -> List[str]:
+    path = Path(input_path).expanduser()
+
+    if path.is_dir():
+        return [str(pdf) for pdf in sorted(path.rglob("*.pdf"))]
+
+    if path.is_file() and path.suffix.lower() == ".pdf":
+        return [str(path)]
+
+    if not path.is_file():
+        raise FileNotFoundError(f"Input path '{input_path}' does not exist.")
+
+    if path.suffix.lower() == ".json":
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            raw_paths = payload
+        elif isinstance(payload, dict):
+            raw_paths = payload.get("files") or payload.get("pdfs") or []
+        else:
+            raw_paths = []
+    elif path.suffix.lower() == ".csv":
+        with path.open(newline="", encoding="utf-8") as csvfile:
+            reader = csv.DictReader(csvfile)
+            raw_paths = []
+            for row in reader:
+                raw_paths.append(
+                    row.get("path")
+                    or row.get("pdf_path")
+                    or row.get("file")
+                    or row.get("file_path")
+                    or ""
+                )
+    else:
+        raw_paths = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
+    base_dir = path.parent
+    pdf_paths = []
+    for raw_path in raw_paths:
+        candidate = Path(str(raw_path)).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_dir / candidate
+        if candidate.suffix.lower() != ".pdf":
+            logger.warning("Skipping non-PDF input: %s", candidate)
+            continue
+        pdf_paths.append(str(candidate))
+
+    return pdf_paths
+
+
 def _evaluate_resume(
     resume_data: JSONResume, github_data: dict = None, blog_data: dict = None
 ) -> Optional[EvaluationData]:
@@ -211,7 +384,7 @@ def find_profile(profiles, network):
     )
 
 
-def main(pdf_path):
+def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True):
     # Create cache filename based on PDF path
     cache_filename = (
         f"cache/resumecache_{os.path.basename(pdf_path).replace('.pdf', '')}.json"
@@ -335,16 +508,22 @@ def main(pdf_path):
     ):
         candidate_name = resume_data.basics.name
 
-    # Print evaluation results in readable format
-    print_evaluation_results(score, candidate_name)
+    if print_results:
+        print_evaluation_results(score, candidate_name)
+
+    result = build_candidate_result(
+        pdf_path=pdf_path,
+        candidate_name=candidate_name,
+        evaluation=score,
+        resume_data=resume_data,
+        github_data=github_data,
+    )
+
+    if output_dir:
+        write_candidate_json(result, Path(output_dir))
 
     if DEVELOPMENT_MODE:
-        csv_row = transform_evaluation_response(
-            file_name=os.path.basename(pdf_path),
-            evaluation=score,
-            resume_data=resume_data,
-            github_data=github_data,
-        )
+        csv_row = result["summary"]
 
         # Write CSV row to file
         csv_path = "resume_evaluations.csv"
@@ -361,17 +540,117 @@ def main(pdf_path):
             # Write the row
             writer.writerow(csv_row)
 
-    return score
+    return result
+
+
+def rank_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ranked_results = sorted(
+        results,
+        key=lambda result: (
+            -result.get("score", 0),
+            result.get("candidate_name", "").lower(),
+        ),
+    )
+    for index, result in enumerate(ranked_results, 1):
+        result["rank"] = index
+    return ranked_results
+
+
+def run_batch(input_path: str, output_dir: str, print_results: bool = True) -> int:
+    pdf_paths = discover_pdf_paths(input_path)
+
+    if not pdf_paths:
+        print(f"No PDF files found in '{input_path}'.")
+        return 1
+
+    output_path = Path(output_dir)
+    results = []
+    failures = []
+
+    for index, pdf_path in enumerate(pdf_paths, 1):
+        print(f"\n[{index}/{len(pdf_paths)}] Scoring {pdf_path}")
+        try:
+            result = main(pdf_path, output_dir=output_dir, print_results=print_results)
+            if result:
+                results.append(result)
+            else:
+                failures.append(
+                    {
+                        "source_file": os.path.abspath(pdf_path),
+                        "error": "No result returned from scoring pipeline.",
+                    }
+                )
+        except Exception as exc:
+            logger.exception("Failed to score %s", pdf_path)
+            failures.append(
+                {"source_file": os.path.abspath(pdf_path), "error": str(exc)}
+            )
+
+    ranked_results = rank_results(results)
+    for result in ranked_results:
+        write_candidate_json(result, output_path)
+
+    write_ranked_outputs(ranked_results, output_path)
+
+    if failures:
+        (output_path / "failures.json").write_text(
+            json.dumps(failures, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    print(f"\nWrote {len(ranked_results)} ranked result(s) to {output_path}")
+    if failures:
+        print(f"{len(failures)} resume(s) failed. See {output_path / 'failures.json'}")
+
+    return 0 if ranked_results else 1
+
+
+def parse_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Score one resume PDF or batch-score PDFs into ranked output files."
+    )
+    parser.add_argument(
+        "pdf_path",
+        nargs="?",
+        help="Backward-compatible single PDF path.",
+    )
+    parser.add_argument(
+        "-i",
+        "--input",
+        dest="input_path",
+        help="PDF, directory of PDFs, or manifest file (.txt, .csv, .json).",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        help="Directory where per-candidate JSON and ranked summary files are written.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Skip the detailed console report for each candidate.",
+    )
+    return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    args = parse_args(sys.argv[1:])
+    input_path = args.input_path or args.pdf_path
+
+    if not input_path:
         print("Usage: python score.py <pdf_path>")
-        exit(1)
-    pdf_path = sys.argv[1]
-
-    if not os.path.exists(pdf_path):
-        print(f"Error: File '{pdf_path}' does not exist.")
+        print("   or: python score.py --input <pdf|directory|manifest> --output-dir <dir>")
         exit(1)
 
-    main(pdf_path)
+    if args.output_dir:
+        exit(run_batch(input_path, args.output_dir, print_results=not args.quiet))
+
+    if not os.path.exists(input_path):
+        print(f"Error: File '{input_path}' does not exist.")
+        exit(1)
+
+    if Path(input_path).suffix.lower() != ".pdf":
+        print("Error: batch input requires --output-dir.")
+        exit(1)
+
+    main(input_path, print_results=not args.quiet)
