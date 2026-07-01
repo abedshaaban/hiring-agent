@@ -14,6 +14,10 @@
   </a>
 </p>
 
+<p align="center">
+  <img alt="Hiring Agent workflow: resume parsing, GitHub enrichment, fair scoring, and ranked outputs" src="docs/assets/hiring-agent-workflow.png">
+</p>
+
 ---
 
 ## Contents
