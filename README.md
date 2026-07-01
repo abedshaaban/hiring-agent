@@ -225,7 +225,7 @@ What happens:
 Score every PDF in a directory and write result files to an output directory.
 
 ```bash
-$ python score.py --input /Users/abedshaaban/Downloads/cvs --output-dir results
+$ python score.py --input /path/to/cvs --output-dir results
 ```
 
 You can also pass a text manifest with one PDF path per line:
@@ -316,7 +316,7 @@ VMLX_BASE_URL=http://127.0.0.1:8000/v1
 Start the vMLX server with your local MLX model path:
 
 ```bash
-$ vmlx serve /Users/.../.cache/huggingface/hub/Qwen/Qwen3-4B-MLX-4bit
+$ vmlx serve /path/to/.cache/huggingface/hub/Qwen/Qwen3-4B-MLX-4bit
 ```
 
 In a second terminal, verify that the OpenAI-compatible API endpoint is running:
