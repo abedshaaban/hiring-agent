@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)5s - %(lineno)5d - %(funcName)33s - %(levelname)5s - %(message)s",
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%H:%M:%S",
 )
 
 
@@ -228,6 +229,7 @@ def safe_output_stem(path: str) -> str:
 def write_candidate_json(result: Dict[str, Any], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{safe_output_stem(result['file_name'])}.json"
+    logger.info("Writing candidate result JSON to %s", output_path)
     output_path.write_text(
         json.dumps(result, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -239,12 +241,14 @@ def write_ranked_outputs(results: List[Dict[str, Any]], output_dir: Path) -> Non
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ranked_json_path = output_dir / "ranked_results.json"
+    logger.info("Writing ranked JSON results to %s", ranked_json_path)
     ranked_json_path.write_text(
         json.dumps(results, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
     csv_path = output_dir / "ranked_results.csv"
+    logger.info("Writing ranked CSV results to %s", csv_path)
     fieldnames = [
         "rank",
         "candidate_name",
@@ -261,6 +265,7 @@ def write_ranked_outputs(results: List[Dict[str, Any]], output_dir: Path) -> Non
             writer.writerow({field: result.get(field) for field in fieldnames})
 
     markdown_path = output_dir / "ranked_results.md"
+    logger.info("Writing ranked Markdown results to %s", markdown_path)
     lines = [
         "# Ranked Resume Results",
         "",
@@ -282,11 +287,15 @@ def write_ranked_outputs(results: List[Dict[str, Any]], output_dir: Path) -> Non
 
 def discover_pdf_paths(input_path: str) -> List[str]:
     path = Path(input_path).expanduser()
+    logger.info("Discovering PDF input from %s", path)
 
     if path.is_dir():
-        return [str(pdf) for pdf in sorted(path.rglob("*.pdf"))]
+        pdf_paths = [str(pdf) for pdf in sorted(path.rglob("*.pdf"))]
+        logger.info("Found %s PDF file(s) under %s", len(pdf_paths), path)
+        return pdf_paths
 
     if path.is_file() and path.suffix.lower() == ".pdf":
+        logger.info("Using single PDF file %s", path)
         return [str(path)]
 
     if not path.is_file():
@@ -330,6 +339,7 @@ def discover_pdf_paths(input_path: str) -> List[str]:
             continue
         pdf_paths.append(str(candidate))
 
+    logger.info("Resolved %s PDF file(s) from manifest %s", len(pdf_paths), path)
     return pdf_paths
 
 
@@ -338,24 +348,38 @@ def _evaluate_resume(
 ) -> Optional[EvaluationData]:
     """Evaluate the resume using AI and display results."""
 
+    logger.info("Preparing final resume evaluation with model %s", DEFAULT_MODEL)
     model_params = MODEL_PARAMETERS.get(DEFAULT_MODEL)
     evaluator = ResumeEvaluator(model_name=DEFAULT_MODEL, model_params=model_params)
 
     # Convert JSON resume data to text
     resume_text = convert_json_resume_to_text(resume_data)
+    logger.info("Converted extracted resume data to %s characters", len(resume_text))
 
     # Add GitHub data if available
     if github_data:
         github_text = convert_github_data_to_text(github_data)
         resume_text += github_text
+        logger.info(
+            "Added GitHub enrichment data for evaluation (%s characters)",
+            len(github_text),
+        )
+    else:
+        logger.info("No GitHub enrichment data available for evaluation")
 
     # Add blog data if available
     if blog_data:
         blog_text = convert_blog_data_to_text(blog_data)
         resume_text += blog_text
+        logger.info(
+            "Added blog enrichment data for evaluation (%s characters)",
+            len(blog_text),
+        )
 
     # Evaluate the enhanced resume
+    logger.info("Sending final evaluation request to the LLM")
     evaluation_result = evaluator.evaluate_resume(resume_text)
+    logger.info("Final evaluation completed")
 
     # print(evaluation_result)
 
@@ -386,6 +410,9 @@ def find_profile(profiles, network):
 
 
 def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True):
+    pipeline_start = time.monotonic()
+    logger.info("Starting scoring pipeline for %s", pdf_path)
+
     # Create cache filename based on PDF path
     cache_filename = (
         f"cache/resumecache_{os.path.basename(pdf_path).replace('.pdf', '')}.json"
@@ -399,7 +426,7 @@ def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True)
 
     # Check if cache exists and we're in development mode
     if DEVELOPMENT_MODE and os.path.exists(cache_filename):
-        print(f"Loading cached data from {cache_filename}")
+        logger.info("Loading cached resume extraction from %s", cache_filename)
         try:
             cached_data = json.loads(Path(cache_filename).read_text(encoding="utf-8"))
             loaded_resume = JSONResume(**cached_data)
@@ -407,30 +434,35 @@ def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True)
                 raise ValueError("Cached resume data contains no core content")
             resume_data = loaded_resume
             cache_loaded = True
+            logger.info("Resume extraction cache is valid; skipping PDF parsing")
         except Exception as e:
-            print(f"⚠️ Warning: Invalid cache file {cache_filename}: {e}")
-            print("Ignoring cache and reprocessing PDF...")
+            logger.warning("Invalid cache file %s: %s", cache_filename, e)
+            logger.info("Ignoring cache and reprocessing PDF")
             try:
                 os.remove(cache_filename)
             except Exception as delete_err:
-                print(
-                    f"Failed to delete invalid cache file {cache_filename}: {delete_err}"
+                logger.warning(
+                    "Failed to delete invalid cache file %s: %s",
+                    cache_filename,
+                    delete_err,
                 )
 
     if not cache_loaded:
-        logger.debug(
-            f"Extracting data from PDF"
-            + (" and caching to " + cache_filename if DEVELOPMENT_MODE else "")
+        logger.info(
+            "Extracting structured resume data from PDF%s",
+            f" and will cache to {cache_filename}" if DEVELOPMENT_MODE else "",
         )
         pdf_handler = PDFHandler()
         resume_data = pdf_handler.extract_json_from_pdf(pdf_path)
 
         if resume_data == None:
+            logger.error("Resume extraction failed for %s", pdf_path)
             return None
 
         if DEVELOPMENT_MODE:
             if is_valid_resume_data(resume_data):
                 os.makedirs(os.path.dirname(cache_filename), exist_ok=True)
+                logger.info("Writing resume extraction cache to %s", cache_filename)
                 Path(cache_filename).write_text(
                     json.dumps(resume_data.model_dump(), indent=2, ensure_ascii=False),
                     encoding="utf-8",
@@ -444,7 +476,7 @@ def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True)
     github_data = {}
     github_cache_loaded = False
     if DEVELOPMENT_MODE and os.path.exists(github_cache_filename):
-        print(f"Loading cached data from {github_cache_filename}")
+        logger.info("Loading cached GitHub enrichment from %s", github_cache_filename)
         try:
             loaded_github = json.loads(
                 Path(github_cache_filename).read_text(encoding="utf-8")
@@ -457,14 +489,17 @@ def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True)
                 raise ValueError("Cached GitHub data is invalid or empty")
             github_data = loaded_github
             github_cache_loaded = True
+            logger.info("GitHub enrichment cache is valid; skipping API fetch")
         except Exception as e:
-            print(f"⚠️ Warning: Invalid GitHub cache file {github_cache_filename}: {e}")
-            print("Ignoring GitHub cache and refetching...")
+            logger.warning("Invalid GitHub cache file %s: %s", github_cache_filename, e)
+            logger.info("Ignoring GitHub cache and refetching")
             try:
                 os.remove(github_cache_filename)
             except Exception as delete_err:
-                print(
-                    f"Failed to delete invalid GitHub cache file {github_cache_filename}: {delete_err}"
+                logger.warning(
+                    "Failed to delete invalid GitHub cache file %s: %s",
+                    github_cache_filename,
+                    delete_err,
                 )
 
     if not github_cache_loaded:
@@ -475,13 +510,14 @@ def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True)
         github_profile = find_profile(profiles, "Github")
 
         if github_profile:
-            print(
-                f"Fetching GitHub data"
-                + (
-                    " and caching to " + github_cache_filename
+            logger.info(
+                "Fetching GitHub enrichment from %s%s",
+                github_profile.url,
+                (
+                    f" and will cache to {github_cache_filename}"
                     if DEVELOPMENT_MODE
                     else ""
-                )
+                ),
             )
             github_data = fetch_and_display_github_info(github_profile.url)
 
@@ -492,10 +528,15 @@ def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True)
                 and "profile" in github_data
             ):
                 os.makedirs(os.path.dirname(github_cache_filename), exist_ok=True)
+                logger.info(
+                    "Writing GitHub enrichment cache to %s", github_cache_filename
+                )
                 Path(github_cache_filename).write_text(
                     json.dumps(github_data, indent=2, ensure_ascii=False),
                     encoding="utf-8",
                 )
+        else:
+            logger.info("No GitHub profile found in extracted resume data")
 
     score = _evaluate_resume(resume_data, github_data)
 
@@ -529,6 +570,7 @@ def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True)
         # Write CSV row to file
         csv_path = "resume_evaluations.csv"
         file_exists = os.path.exists(csv_path)
+        logger.info("Appending development CSV row to %s", csv_path)
 
         with open(csv_path, "a", newline="", encoding="utf-8") as csvfile:
             fieldnames = list(csv_row.keys())
@@ -541,6 +583,12 @@ def main(pdf_path, output_dir: Optional[str] = None, print_results: bool = True)
             # Write the row
             writer.writerow(csv_row)
 
+    elapsed = time.monotonic() - pipeline_start
+    logger.info(
+        "Completed scoring pipeline for %s in %.1fs",
+        candidate_name,
+        elapsed,
+    )
     return result
 
 
@@ -570,7 +618,7 @@ def run_batch(input_path: str, output_dir: str, print_results: bool = True) -> i
 
     for index, pdf_path in enumerate(pdf_paths, 1):
         candidate_start = time.monotonic()
-        print(f"\n[{index}/{len(pdf_paths)}] Scoring {pdf_path}")
+        logger.info("[%s/%s] Scoring %s", index, len(pdf_paths), pdf_path)
         try:
             result = main(pdf_path, output_dir=output_dir, print_results=print_results)
             if result:
@@ -589,7 +637,13 @@ def run_batch(input_path: str, output_dir: str, print_results: bool = True) -> i
             )
         finally:
             candidate_elapsed = time.monotonic() - candidate_start
-            print(f"[{index}/{len(pdf_paths)}] Finished in {candidate_elapsed:.1f}s")
+            logger.info(
+                "[%s/%s] Finished %s in %.1fs",
+                index,
+                len(pdf_paths),
+                pdf_path,
+                candidate_elapsed,
+            )
 
     ranked_results = rank_results(results)
     for result in ranked_results:
@@ -598,6 +652,7 @@ def run_batch(input_path: str, output_dir: str, print_results: bool = True) -> i
     write_ranked_outputs(ranked_results, output_path)
 
     if failures:
+        logger.info("Writing failure report to %s", output_path / "failures.json")
         (output_path / "failures.json").write_text(
             json.dumps(failures, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -644,7 +699,9 @@ if __name__ == "__main__":
 
     if not input_path:
         print("Usage: python score.py <pdf_path>")
-        print("   or: python score.py --input <pdf|directory|manifest> --output-dir <dir>")
+        print(
+            "   or: python score.py --input <pdf|directory|manifest> --output-dir <dir>"
+        )
         exit(1)
 
     if args.output_dir:

@@ -35,6 +35,7 @@ class ResumeEvaluator:
 
     def _initialize_llm_provider(self):
         """Initialize the appropriate LLM provider based on the model."""
+        logger.info("Initializing LLM provider for final evaluation")
         self.provider = initialize_llm_provider(self.model_name)
 
     def _load_evaluation_prompt(self, resume_text: str) -> str:
@@ -50,6 +51,10 @@ class ResumeEvaluator:
         full_prompt = self._load_evaluation_prompt(resume_text)
         # logger.info(f"🔤 Evaluation prompt being sent: {full_prompt}")
         try:
+            logger.info(
+                "Building final evaluation request (%s characters of resume context)",
+                len(resume_text),
+            )
             system_message = self.template_manager.render_template(
                 "resume_evaluation_system_message"
             )
@@ -75,17 +80,20 @@ class ResumeEvaluator:
             # Add format parameter for structured output
             kwargs = {"format": EvaluationData.model_json_schema()}
             # Use the appropriate provider to make the API call
+            logger.info("Waiting for final evaluation LLM response")
             response = self.provider.chat(**chat_params, **kwargs)
+            logger.info("Received final evaluation LLM response")
 
             response_text = response["message"]["content"]
             response_text = extract_json_from_response(response_text)
-            logger.error(f"🔤 Prompt response: {response_text}")
+            logger.debug("Final evaluation raw response: %s", response_text)
 
             evaluation_dict = json.loads(response_text)
             evaluation_data = EvaluationData(**evaluation_dict)
+            logger.info("Parsed final evaluation response successfully")
 
             return evaluation_data
 
         except Exception as e:
-            logger.error(f"Error evaluating resume: {str(e)}")
+            logger.error("Error evaluating resume: %s", str(e))
             raise

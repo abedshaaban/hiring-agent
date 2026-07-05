@@ -1,9 +1,12 @@
 import os
 import time
+import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import List, Optional, Dict, Tuple, Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class ModelProvider(Enum):
@@ -23,7 +26,7 @@ class LLMProvider(Protocol):
         model: str,
         messages: List[Dict[str, str]],
         options: Dict[str, Any] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Send a chat request to the LLM provider."""
         ...
@@ -285,10 +288,11 @@ class OllamaProvider:
         model: str,
         messages: List[Dict[str, str]],
         options: Dict[str, Any] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Send a chat request to Ollama."""
 
+        start_time = time.monotonic()
         ollama_options = options.copy() if options else {}
 
         # remove steam from ollama options
@@ -311,7 +315,15 @@ class OllamaProvider:
         if "format" in kwargs:
             chat_params["format"] = kwargs["format"]
 
-        return self.client.chat(**chat_params)
+        logger.info(
+            "Sending Ollama chat request: model=%s, messages=%s",
+            model,
+            len(messages),
+        )
+        response = self.client.chat(**chat_params)
+        elapsed = time.monotonic() - start_time
+        logger.info("Ollama chat request completed in %.1fs", elapsed)
+        return response
 
 
 class VMLXProvider:
@@ -336,7 +348,7 @@ class VMLXProvider:
         model: str,
         messages: List[Dict[str, str]],
         options: Dict[str, Any] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Send a chat request to vMLX and return the internal unified format."""
 
@@ -367,11 +379,10 @@ class VMLXProvider:
                 },
             }
 
-        print(
+        logger.info(
             "vMLX request: "
             f"model={model}, messages={len(messages)}, "
-            f"prompt={prompt_chars:,} chars (~{approx_prompt_tokens:,} tokens)",
-            flush=True,
+            f"prompt={prompt_chars:,} chars (~{approx_prompt_tokens:,} tokens)"
         )
         data = self._post_chat_completion(payload)
         content = data["choices"][0]["message"].get("content") or ""
@@ -386,7 +397,7 @@ class VMLXProvider:
         else:
             usage_text = f", response={len(content):,} chars"
 
-        print(f"vMLX completed in {elapsed:.1f}s{usage_text}", flush=True)
+        logger.info("vMLX completed in %.1fs%s", elapsed, usage_text)
 
         return {
             "message": {
@@ -423,7 +434,7 @@ class VMLXProvider:
                     return future.result(timeout=wait_seconds)
                 except FutureTimeoutError:
                     elapsed = time.monotonic() - start_time
-                    print(f"Still waiting on {label}... {elapsed:.0f}s", flush=True)
+                    logger.info("Still waiting on %s... %.0fs elapsed", label, elapsed)
 
             return future.result()
 
@@ -436,6 +447,10 @@ class VMLXProvider:
         response = self._post_with_heartbeat(url, headers, payload)
 
         if response.status_code in (400, 422) and "response_format" in payload:
+            logger.info(
+                "vMLX rejected strict response format with status %s; retrying with json_object",
+                response.status_code,
+            )
             fallback_payload = payload.copy()
             fallback_payload["response_format"] = {"type": "json_object"}
             response = self._post_with_heartbeat(
@@ -470,7 +485,7 @@ class GeminiProvider:
         model: str,
         messages: List[Dict[str, str]],
         options: Dict[str, Any] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Send a chat request to Google Gemini API."""
         import re
@@ -504,9 +519,17 @@ class GeminiProvider:
         for attempt in range(MAX_RETRIES):
             try:
                 # Send the chat request
+                logger.info(
+                    "Sending Gemini chat request: model=%s, messages=%s, attempt=%s/%s",
+                    model,
+                    len(messages),
+                    attempt + 1,
+                    MAX_RETRIES,
+                )
                 response = gemini_model.generate_content(gemini_messages)
 
                 # Convert Gemini response to Ollama-like format for compatibility
+                logger.info("Gemini chat request completed")
                 return {"message": {"role": "assistant", "content": response.text}}
 
             except ResourceExhausted as e:
@@ -521,7 +544,7 @@ class GeminiProvider:
                 api_hint = float(match.group(1)) if match else None
 
                 # Exponential backoff: BASE_DELAY * 2^attempt, capped at MAX_DELAY
-                exp_delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
+                exp_delay = min(BASE_DELAY * (2**attempt), MAX_DELAY)
 
                 # Prefer the API hint when it is shorter than our computed delay
                 delay = api_hint if (api_hint and api_hint < exp_delay) else exp_delay
@@ -529,9 +552,10 @@ class GeminiProvider:
                 # Add ±20% randomized jitter to avoid thundering herd
                 sleep_time = round(delay * random.uniform(0.8, 1.2), 2)
 
-                print(
-                    f"[GeminiProvider] Rate limit hit "
-                    f"(attempt {attempt + 1}/{MAX_RETRIES}). "
-                    f"Retrying in {sleep_time}s..."
+                logger.warning(
+                    "Gemini rate limit hit (attempt %s/%s). Retrying in %ss",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    sleep_time,
                 )
                 time.sleep(sleep_time)

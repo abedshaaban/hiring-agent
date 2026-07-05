@@ -42,6 +42,7 @@ class PDFHandler:
 
     def _initialize_llm_provider(self):
         """Initialize the appropriate LLM provider based on the model."""
+        logger.info("Initializing LLM provider for resume extraction")
         self.provider = initialize_llm_provider(DEFAULT_MODEL)
 
     def extract_text_from_pdf(self, pdf_path: str) -> Optional[str]:
@@ -49,14 +50,17 @@ class PDFHandler:
             if not os.path.exists(pdf_path):
                 raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
+            logger.info("Reading PDF file %s", pdf_path)
             with pymupdf.open(pdf_path) as doc:
+                logger.info("Converting %s PDF page(s) to text", doc.page_count)
                 pages = range(doc.page_count)
                 resume_text = to_markdown(
                     doc,
                     pages=pages,
                 )
-                logger.debug(
-                    f"Extracted text from PDF: {len(resume_text) if resume_text else 0} characters"
+                logger.info(
+                    "Extracted %s characters of text from PDF",
+                    len(resume_text) if resume_text else 0,
                 )
                 return resume_text
         except Exception as e:
@@ -68,8 +72,10 @@ class PDFHandler:
     ) -> Optional[Dict]:
         try:
             start_time = time.time()
-            logger.debug(
-                f"🔄 Extracting {section_name} section using {DEFAULT_MODEL}..."
+            logger.info(
+                "Extracting %s section with %s",
+                section_name,
+                DEFAULT_MODEL,
             )
 
             model_params = MODEL_PARAMETERS.get(
@@ -103,7 +109,9 @@ class PDFHandler:
                 kwargs["format"] = return_model.model_json_schema()
 
             # Use the appropriate provider to make the API call
+            logger.info("Waiting for LLM response for %s section", section_name)
             response = self.provider.chat(**chat_params, **kwargs)
+            logger.info("Received LLM response for %s section", section_name)
 
             response_text = response["message"]["content"]
 
@@ -114,13 +122,14 @@ class PDFHandler:
                 if json_start != -1 and json_end != -1:
                     response_text = response_text[json_start : json_end + 1]
                 parsed_data = json.loads(response_text)
-                logger.debug(f"✅ Successfully extracted {section_name} section")
 
                 transformed_data = transform_parsed_data(parsed_data)
                 end_time = time.time()
                 total_time = end_time - start_time
-                logger.debug(
-                    f"⏱️ Total time for separate section extraction: {total_time:.2f} seconds"
+                logger.info(
+                    "Completed %s section extraction in %.1fs",
+                    section_name,
+                    total_time,
                 )
 
                 return transformed_data
@@ -198,18 +207,14 @@ class PDFHandler:
 
     def extract_json_from_pdf(self, pdf_path: str) -> Optional[JSONResume]:
         try:
-            logger.debug(f"📄 Extracting text from PDF: {pdf_path}")
+            logger.info("Starting PDF-to-JSON extraction for %s", pdf_path)
             text_content = self.extract_text_from_pdf(pdf_path)
 
             if not text_content:
                 logger.error("❌ Failed to extract text from PDF")
                 return None
 
-            logger.debug(
-                f"✅ Successfully extracted {len(text_content)} characters from PDF"
-            )
-
-            logger.debug("🔄 Extracting all sections separately...")
+            logger.info("Starting structured section extraction")
             return self._extract_all_sections_separately(text_content)
 
         except Exception as e:
@@ -286,12 +291,18 @@ class PDFHandler:
             "meta": None,
         }
 
-        for section_name in sections:
+        for section_index, section_name in enumerate(sections, 1):
+            logger.info(
+                "Processing resume section %s/%s: %s",
+                section_index,
+                len(sections),
+                section_name,
+            )
             section_data = self._extract_section_data(text_content, section_name)
 
             if section_data:
                 complete_resume.update(section_data)
-                logger.debug(f"✅ Successfully extracted {section_name} section")
+                logger.info("Added %s section to extracted resume data", section_name)
             else:
                 logger.error(
                     f"⚠️ Failed to extract {section_name} section. Aborting extraction to prevent partial/invalid resume data."
@@ -313,7 +324,8 @@ class PDFHandler:
             end_time = time.time()
             total_time = end_time - start_time
             logger.info(
-                f"⏱️ Total time for separate section extraction: {total_time:.2f} seconds"
+                "Completed all resume section extraction in %.1fs",
+                total_time,
             )
 
             return json_resume
